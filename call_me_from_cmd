@@ -1,0 +1,27 @@
+#!/bin/bash
+
+# This script is called from the Docker CMD, and starts all the necessary services
+# (c) Copyright 2021 Tor-Einar Skog NIBIO
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU Affero General Public License as
+#    published by the Free Software Foundation, either version 3 of the
+#    License, or (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU Affero General Public License for more details.
+#
+#    You should have received a copy of the GNU Affero General Public License
+#    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+# Since we need some of the Ubuntu services running, we need to start them here
+service apache2 start
+service cron start
+# First time download of weather data
+su -s /bin/bash -c 'cd /opt/ipmdecisions/perl;./run > ./download.log' ipmdecisions
+# Start the gatekeeper process
+cd /opt/ipmdecisions/NetCDF-Location-Weather-Adapter/app
+su -s /bin/bash -c 'python3 gatekeeper.py' ipmdecisions
