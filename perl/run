@@ -1,12 +1,13 @@
 # bash-shell...
 #
-# -d -v
+# -d -v -f
 ./ftpget.pl  -l file.lock \
              -r file.register \
 	     -a 0.5 \
 	     -w tmpdir \
 	     -o outdir \
-	     -c "*.grib" \
+	     -b /weather/nwp/icon-eu/grib/* \
+	     -c "*.grib*" \
 	     -s anonymous@opendata.dwd.de:post@ipmdecisions.net \
 	     -x postprocess.pl@../outdir/all.nc \
 	     /weather/nwp/icon-eu/grib/00/relhum_2m/*regular* \
@@ -49,13 +50,13 @@
 	     /weather/nwp/icon-eu/grib/21/tot_prec/*regular* \
 	     /weather/nwp/icon-eu/grib/21/u_10m/*regular* \
 	     /weather/nwp/icon-eu/grib/21/v_10m/*regular*
-
+	     
 # Docker specific destination
 cp ./outdir/all.nc /opt/ipmdecisions/NetCDF-Location-Weather-Adapter/weather_data/
 
-# fimex --input.file /home/franktt/fimex/perl/outdir/all.grib2 \
+# fimex --input.file outdir/dwd.grib2 \
 #  --input.config cdmGribReaderConfig.xml --interpolate.latitudeValues 50.0 \
-#  --interpolate.longitudeValues 10.0 --output.file test.nc
+#  --interpolate.longitudeValues 10.0 --output.file dwd.nc
 
 
 #

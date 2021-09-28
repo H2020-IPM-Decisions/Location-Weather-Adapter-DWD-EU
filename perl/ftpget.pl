@@ -47,11 +47,17 @@ Valid options:
 
   -a <age> maximum allowed age difference to latest file (hours) to be interesting.
 
+  -b <mask> directory bins.
+
+  -n <age> minimum age of newest file in directory bin (hours) for directory to be interesting.
+
   -s <user\@server:password> user, name of server and password.
 
   -x <script\@options> name of post-processing script to execute on new and interesting files.
               Command is: <script> <options> file1 file2 file3 ... filen
   
+  -f Run script anyways.
+
   -m <owner> email adress to owner (system error notifications).
 
 \n";
@@ -79,11 +85,14 @@ my $clean;
 my $dry = 0;
 my $verbose = 0;
 
+my $force;
 my $script="";
 
 my $tz="GMT"; # GMT, MEST, MET, +0200, -0600
 my $td=0;
 my $maxdiff;
+my $minbinage=0.15;
+my $binmask;
 
 my @owners = ();
 my %Mail = ();
@@ -101,6 +110,8 @@ while ($_ = $ARGV[0],/^-./) {
     if ($pattern =~ /^-d$/) {$dry=1; next;}
     if ($pattern =~ /^-v$/) {$verbose=1; next;}
     if ($pattern =~ /^-a$/) {$maxdiff = shift @ARGV; next;}
+    if ($pattern =~ /^-n$/) {$minbinage = shift @ARGV; next;}
+    if ($pattern =~ /^-b$/) {$binmask = shift @ARGV; next;}
     if ($pattern =~ /^-s$/) {
 	my $arg=shift @ARGV;
 	if ($arg =~ m/^([^@]*)@([^:]*):(.*)$/) {
@@ -118,6 +129,7 @@ while ($_ = $ARGV[0],/^-./) {
 	    $ftp_passwd=$3;
 	};next;}
     if ($pattern =~ /^-m$/) {push(@owners,shift @ARGV); next;}
+    if ($pattern =~ /^-f$/) {$force = 1; next;}
     if ($pattern =~ /^-x$/) {$script = shift @ARGV; next;}
     &Usage;
 }
@@ -235,6 +247,30 @@ my $minpath;
 # loop over directories and patterns on remote server, find latest file
 my $ftp_cdir="";
 my $cnt=0;
+
+my %orm;
+my %ook;
+
+# get directory bins
+my %binages;
+my %binfiles;
+if ($binmask =~ m/^(.*)\/([^\/]*)$/) {
+    my $bin_directory=$1;
+    my $bin_mask=$2;
+    $ftp->cwd($bin_directory) or 
+	rip("Cwd operation to '$bin_directory' failed ($@)");
+    $ftp_cdir=$bin_directory;
+    my @remote_list = $ftp->dir($bin_mask);
+    print(">>>> Found ".(scalar(@remote_list))." files in $bin_directory ($bin_mask)\n");
+    foreach my $line (@remote_list) {
+	my $age=240.0;
+	if ($line =~ m/^(.*\s+)(\S+)$/) {
+	    my $path=$bin_directory . "/" . $2;
+	    $binages{$path} = $age; # a long time ago...
+	    $binfiles{$path} = []; # files in this bin..
+	}
+    };
+};
 my $nloc=scalar(@dirs);
 for (my $ii=0; $ii<$nloc;$ii++) {
     my $ftp_directory=shift @dirs;
@@ -246,8 +282,14 @@ for (my $ii=0; $ii<$nloc;$ii++) {
 	$ftp_cdir=$ftp_directory;
     }
     #    if ($sleep) {sleep $sleep;}
-    my @remote_list = $ftp->dir($ftp_mask) or
-	print(">>>> Found files in $ftp_directory ($ftp_mask)\n");
+    # find bin dir...
+    my $bindir;
+    for my $key (keys %binages) {
+	if ($ftp_directory =~ m/^\Q$key\E/) {
+	    $bindir=$key;
+	};
+    };
+    my @remote_list = $ftp->dir($ftp_mask);
     my $lcnt=0;
     foreach my $line (@remote_list) {
 	if ($verbose) {print ">>>> $line\n";}
@@ -256,10 +298,16 @@ for (my $ii=0; $ii<$nloc;$ii++) {
 	    $cnt=$cnt+1;
 	    $lcnt=$lcnt+1;
 	    my $age=getAge($line);
+	    if ($bindir) {
+		$binages{$bindir}=min($age,$binages{$bindir});
+		push(@{$binfiles{$bindir}},$path);
+	    };	    
 	    if ($age<$td) { # file is being uploaded...
 		$delay=1;
 		if ($verbose) {print ">>>> Too new: $path (Age=".sprintf("%.1f",$age)." < $td)\n";}
+		$orm{"Files on server"}=($orm{"Files on server"}||0)+1;
 	    } else {
+		$ook{"Files on server"}=($ook{"Files on server"}||0)+1;
 		$remote_files->{$path} = $1 . $path;
 		$remote_dir->{$path} = $ftp_directory;
 		$remote_age->{$path} = $age;
@@ -270,26 +318,69 @@ for (my $ii=0; $ii<$nloc;$ii++) {
 	    }
 	}
     };
-    print ">>>> Found $lcnt files in $ftp_directory\n";
+    print ">>>> Found $lcnt files in $ftp_directory ($ftp_mask)";
+    if ($bindir) {print " => ".sprintf("%.1f",$binages{$bindir})."hrs";};
+    print "\n";
 }
 print ">>>> Found $cnt files on $ftp_host\n";
+# print ages:
+my $minage;
+my $minkey;
+if ($binmask) {
+    for my $key (keys %binages) {
+	my $age=sprintf("%.1f",$binages{$key});
+	if ($age > $minbinage && (! defined($minage) || $age < $minage)) { 
+	    $minage=$age;
+	    $minkey=$key;
+	};
+    };
+    print ">>>> Bin directory:  ${minkey} => ${minage}hrs\n";
+} else {
+    print ">>>> No bin directory available.\n";
+}
 if ($dry) {print ">>>> This is a DRY RUN!\n";};
 # retrieve external files not present in local register
 $cnt=0;
-foreach my $path (sort keys %$remote_files) {
+my @selected_files;
+if ($minkey) {
+    @selected_files=@{$binfiles{$minkey}};
+    $orm{"Selected bin"}=scalar(keys %$remote_files)-scalar(@selected_files);
+} else {
+    @selected_files=sort keys %$remote_files
+};
+foreach my $path (@selected_files) {
+    $ook{"Selected bin"}=($ook{"Selected bin"}||0)+1;
     my $ftp_directory=$remote_dir->{$path};
     my $age=$remote_age->{$path};
     if ($maxdiff && $age-$minage > $maxdiff) {
 	if ($verbose) {print ">>>> Old file   $path (".sprintf("%.1f",$age)."-".sprintf("%.1f",$minage).">$maxdiff)\n";}
+	$orm{"Not too old"}=($orm{"Not too old"}||0)+1;
     } else {
+	$ook{"Not too old"}=($ook{"Not too old"}||0)+1;
 	my $line=$remote_files->{$path};
 	if (exists($local_files->{$path}) and $local_files->{$path} eq $remote_files->{$path}) {
 	    if ($verbose) {print ">>>> File not changed: $path\n";}
+	    $orm{"Not in register"}=($orm{"Not in register"}||0)+1;
+	    (my $file) = ($path =~ m/^.*\/(\S+)$/);
+	    if ($file =~ m/^(.*).gz$/) {
+		$file=$1;
+	    }
+	    if ($file =~ m/^(.*).bz2$/) {
+		$file=$1;
+	    }
+	    if ($destDir) {
+		my $target=$destDir . $file;
+		push(@retrieved_files, $target);
+	    } else {
+		push(@retrieved_files, $file);
+	    }
 	} else {
+	    $ook{"Not in register"}=($ook{"Not in register"}||0)+1;
 	    (my $file) = ($path =~ m/^.*\/(\S+)$/);
 	    $processedafile=1;
 	    if ($sleep) {sleep $sleep;}
 	    if (! $dry) {
+		$ook{"dry"}=($ook{"dry"}||0)+1;
 		if ($verbose) {print ">>>> Processing $path (Age=".sprintf("%.1f",$age)."h)\n";}
 		if (! $ftp_cdir || $ftp_cdir ne $ftp_directory) {
 		    $ftp->cwd($ftp_directory) or 
@@ -297,7 +388,8 @@ foreach my $path (sort keys %$remote_files) {
 		    $ftp_cdir=$ftp_directory;
 		}
 		if ($ftp->get($file)) {
-		    if ($verbose) {print ">>>> Downloaded $file ($ftp_directory)\n";}
+		    print ">>>> Downloaded $file ($ftp_directory)\n";
+		    $ook{"Downloaded"}=($ook{"Downloaded"}||0)+1;
 		    if ($file =~ m/^(.*).gz$/) {
 			$retval=system "gunzip -f $file";
 			if ($retval==0) { # success
@@ -327,8 +419,10 @@ foreach my $path (sort keys %$remote_files) {
 		    }
 		} else {
 		    if ($verbose) {print STDERR ">>>> Couldn't retrieve file $file ($@)";}
+		    $orm{"Downloaded"}=($orm{"Downloaded"}||0)+1;
 		}
 	    } else {
+		$orm{"dry"}=($orm{"dry"}||0)+1;
 		if ($verbose) {print ">>>> Found file   $path (".sprintf("%.1f",$age)."-".sprintf("%.1f",$minage).">$maxdiff)\n";}
 		if ($file =~ m/^(.*).gz$/) {
 		    $file=$1;
@@ -360,25 +454,35 @@ if ($processedafile) {
     setRegister($regfile,$remote_files);
 };
 
-if ($script && $processedafile) {
+&printSummary("Files on server");
+&printSummary("Selected bin");
+&printSummary("Not too old");
+&printSummary("Not in register");
+&printSummary("Downloaded");
+
+if ($script && ($force || $processedafile)) {
     if ($delay) {
-	if ($verbose) {print ">>>> Files are being uploaded. Omitting post-processing script.\n"} 
+	print ">>>> Files are being uploaded. Omitting post-processing script.\n";
     } else {
 	print(">>>> Post-Processing ".scalar(@retrieved_files)." files...\n");
 	postProcess($script,@retrieved_files);
     }
 } elsif (!$script && $processedafile) {
-    if ($verbose) {print ">>>> No post-processing script was specified.\n"} 
+    print ">>>> No post-processing script was specified.\n";
 } elsif ($script && !$processedafile) {
-    if ($verbose) {print ">>>> The post-processing script is only executed if new and interesting files are found.\n"} 
+    print ">>>> The post-processing script is only executed if new and interesting files are found.\n";
 } else {
     print ">>>> No files were post-processed.\n";
 }
 
 if ($clean) {
-    if ($workDir) {clean($workDir,$clean,"1");}
-    if ($destDir) {clean($destDir,$clean,"1");}
+    if ($workDir) {clean($workDir,$clean,"+1");}
+    if ($destDir) {clean($destDir,$clean,"+1");}
 };
+
+#use Data::Dumper;
+#print Dumper(%ook);
+#print Dumper(%orm);
 
 # Unlock lock-file...
 close LOCKFILE;
@@ -388,6 +492,14 @@ unlink($lockfile) || print(">>>> Unable to remove $lockfile\n");
 #                                                                      #
 ########################################################################
 
+sub printSummary {
+    my $key=shift;
+    my $xok=$ook{$key}||0;
+    print ">>>> $key: $xok ok";
+    my $xrm=$orm{$key}||"";
+    if ($xrm) { print " ($xrm removed)";};
+    print "\n";
+};
 sub postProcess{
     my $script=shift;
     my @retrieved_files=@_;
@@ -403,9 +515,10 @@ sub postProcess{
     foreach my $arg (sort @retrieved_files) {
 	push (@args,$arg);
     }
-    foreach my $arg (@args) {
-	print("Argument ($script): $arg\n");
-    }
+    #foreach my $arg (@args) {
+	#print("Argument ($script): $arg\n");
+    #}
+    print("Executing $script with ".(scalar(@args))." arguments.\n");
     if (-x $script) {
 	my $retval=system($script,@args);
 	if ($retval==0) {
@@ -414,7 +527,7 @@ sub postProcess{
 	    print ">>>> Failed executing $script ($options)\n";
 	};
     } else {
-	print ">>>> Unable to find the script \"$script\"\n";
+	if ($verbose) {print ">>>> Unable to find the script \"$script\"\n";}
     }
 }
 
@@ -487,7 +600,7 @@ sub getAge {
 	my $epoch=str2time($1,$tz);
 	my $now=time();
 	my $age=($now-$epoch)/3600;
-	###print "$1 -> $epoch ($tz) $age\n";
+	#print "$1 -> $epoch ($tz) $age\n";
 	return $age;
     };
 }
