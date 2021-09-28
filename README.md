@@ -43,7 +43,7 @@ The build will clone the master branch of [NetCDF-Location-Weather-Adapter](http
 ## Building and running
 ``` bash
 sudo docker build --tag ipmdecisions/weather_adapter_dwd-eu:ALPHA-01 .
-sudo docker run --publish 5001:80 -dt ipmdecisions/weather_adapter_dwd-eu:ALPHA-01
+sudo docker run -d --restart unless-stopped --publish 5001:80 -dt ipmdecisions/weather_adapter_dwd-eu:ALPHA-01
 ```
 After you start the container, it will start downloading weather data from DWD. Expect 10-15 minutes to pass before the service is up and running.
 
